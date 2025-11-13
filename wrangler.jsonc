@@ -1,0 +1,13 @@
+{
+  "name": "ref-tool-worker",
+  "compatibility_date": "2025-11-12",
+  "main": "dist/worker.js",
+  "build": {
+    "command": "npm run build",
+    "watch_dir": "src"
+  },
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS"
+  }
+}
