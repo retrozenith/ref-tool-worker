@@ -25,10 +25,63 @@ Returns API information and health status.
 {
   "message": "PDF Generator API",
   "endpoint": "POST /api/generate-report",
+  "status_endpoint": "GET /api/status (includes template hash check and autotest)",
   "supported_categories": ["U9", "U11", "U13", "U15"],
   "status": "healthy"
 }
 ```
+
+### System Status
+```
+GET /api/status
+GET /api/status?refresh=true
+```
+
+Returns detailed system status including template hash verification and autotest results.
+
+**Query Parameters:**
+- `refresh` (optional): Set to `true` to bypass cache and force a fresh check
+
+**Response:**
+```json
+{
+  "status": "healthy",
+  "timestamp": "2025-11-13T18:49:45.884Z",
+  "templates": [
+    {
+      "path": "/reports/referee_template_u9.pdf",
+      "exists": true,
+      "hash": "2c39f190ce628be33404bb62c8b272cba68a6924a2e876095d426da6f6680980",
+      "size": 884420,
+      "hashValid": true,
+      "expectedHash": "2c39f190ce628be33404bb62c8b272cba68a6924a2e876095d426da6f6680980"
+    }
+  ],
+  "font": {
+    "exists": true,
+    "hash": "0de679de4d3d236c4a60e13bd2cd16d0f93368e9f6ba848385a8023c2e53c202",
+    "size": 168644,
+    "hashValid": true,
+    "expectedHash": "0de679de4d3d236c4a60e13bd2cd16d0f93368e9f6ba848385a8023c2e53c202"
+  },
+  "autotest": {
+    "passed": true,
+    "duration": 305
+  }
+}
+```
+
+**Status Values:**
+- `healthy`: All templates and fonts present with valid hashes, autotest passed
+- `degraded`: Files present but autotest failed
+- `unhealthy`: Missing files or hash mismatch detected
+
+**Features:**
+- ✅ SHA-256 hash verification for all templates and font
+- ✅ Automatic PDF generation test for all age categories (U9, U11, U13, U15)
+- ✅ File existence and integrity checks
+- ✅ Response caching (1 minute TTL)
+- ✅ Detailed error reporting
 
 ### Generate Report
 ```
@@ -137,6 +190,15 @@ The worker fetches PDF templates and fonts from the bound static assets and appl
 ### Test Health Endpoint
 ```bash
 curl http://localhost:8787/health
+```
+
+### Test System Status
+```bash
+# Normal status check (cached)
+curl http://localhost:8787/api/status
+
+# Force refresh status check
+curl http://localhost:8787/api/status?refresh=true
 ```
 
 ### Test PDF Generation

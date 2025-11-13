@@ -28,6 +28,51 @@ export interface Env {
   ASSETS: Fetcher;
 }
 
+interface TemplateStatus {
+  path: string;
+  exists: boolean;
+  hash?: string;
+  size?: number;
+  error?: string;
+  hashValid?: boolean;
+  expectedHash?: string;
+}
+
+interface SystemStatus {
+  status: 'healthy' | 'degraded' | 'unhealthy';
+  timestamp: string;
+  templates: TemplateStatus[];
+  font: {
+    exists: boolean;
+    hash?: string;
+    size?: number;
+    error?: string;
+    hashValid?: boolean;
+    expectedHash?: string;
+  };
+  autotest?: {
+    passed: boolean;
+    errors?: string[];
+    duration?: number;
+  };
+  issues?: string[];
+}
+
+let cachedSystemStatus: SystemStatus | null = null;
+let lastStatusCheck: number = 0;
+const STATUS_CACHE_TTL = 60000; // 1 minute
+
+// Known good hashes for templates and font (baseline)
+const KNOWN_GOOD_HASHES = {
+  templates: {
+    '/reports/referee_template_u9.pdf': '2c39f190ce628be33404bb62c8b272cba68a6924a2e876095d426da6f6680980',
+    '/reports/referee_template_u11.pdf': '3996ff002d0c86c1e2902255c2fccf02c5538c0c6f72b9d3aba16f3fc56de925',
+    '/reports/referee_template_u13.pdf': '2bce26208461dccb0a375847ecc8954df47ec9e98c2cca3de4533914a4a8b432',
+    '/reports/referee_template_u15.pdf': 'bc99e407ff955a3c417596ed2fc2a1d3d69fc069693ce55f14e9d638c5e257d1',
+  },
+  font: '0de679de4d3d236c4a60e13bd2cd16d0f93368e9f6ba848385a8023c2e53c202',
+};
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const allowedOrigins = [
@@ -51,11 +96,40 @@ export default {
 
     const url = new URL(request.url);
 
+    // System status endpoint with hash check
+    if (url.pathname === '/api/status') {
+      try {
+        const forceRefresh = url.searchParams.get('refresh') === 'true';
+        const status = await getSystemStatus(env, forceRefresh);
+        
+        return new Response(JSON.stringify(status, null, 2), {
+          headers: {
+            'Content-Type': 'application/json',
+            ...corsHeaders,
+          },
+          status: status.status === 'healthy' ? 200 : 503,
+        });
+      } catch (error) {
+        return new Response(JSON.stringify({
+          status: 'unhealthy',
+          error: error instanceof Error ? error.message : 'Unknown error',
+          timestamp: new Date().toISOString(),
+        }), {
+          status: 500,
+          headers: {
+            'Content-Type': 'application/json',
+            ...corsHeaders,
+          },
+        });
+      }
+    }
+
     // Health check endpoint
     if (url.pathname === '/' || url.pathname === '/health') {
       return new Response(JSON.stringify({
         message: 'PDF Generator API',
         endpoint: 'POST /api/generate-report',
+        status_endpoint: 'GET /api/status (includes template hash check and autotest)',
         supported_categories: ['U9', 'U11', 'U13', 'U15'],
         status: 'healthy'
       }), {
@@ -304,4 +378,224 @@ function generateFilename(formData: FormData): string {
   const team2Clean = formData.team_2.replace(/[^a-zA-Z0-9]/g, '');
 
   return `referee_report_${formData.age_category}_${team1Clean}_vs_${team2Clean}_${dateStr}.pdf`;
+}
+
+async function getSystemStatus(env: Env, forceRefresh: boolean = false): Promise<SystemStatus> {
+  const now = Date.now();
+  
+  // Return cached status if available and not expired
+  if (!forceRefresh && cachedSystemStatus && (now - lastStatusCheck) < STATUS_CACHE_TTL) {
+    return cachedSystemStatus;
+  }
+
+  const templatePaths = [
+    '/reports/referee_template_u9.pdf',
+    '/reports/referee_template_u11.pdf',
+    '/reports/referee_template_u13.pdf',
+    '/reports/referee_template_u15.pdf',
+  ];
+
+  const fontPath = '/fonts/Roboto-Medium.ttf';
+
+  // Check templates
+  const templateStatuses = await Promise.all(
+    templatePaths.map(async (path): Promise<TemplateStatus> => {
+      try {
+        const response = await env.ASSETS.fetch(new Request(`https://dummy.com${path}`));
+        if (!response.ok) {
+          return { path, exists: false, error: `HTTP ${response.status}` };
+        }
+        const buffer = await response.arrayBuffer();
+        const hash = await computeHash(buffer);
+        const expectedHash = KNOWN_GOOD_HASHES.templates[path as keyof typeof KNOWN_GOOD_HASHES.templates];
+        const hashValid = hash === expectedHash;
+        
+        return {
+          path,
+          exists: true,
+          hash,
+          size: buffer.byteLength,
+          hashValid,
+          expectedHash,
+        };
+      } catch (error) {
+        return {
+          path,
+          exists: false,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        };
+      }
+    })
+  );
+
+  // Check font
+  let fontStatus: SystemStatus['font'];
+  try {
+    const response = await env.ASSETS.fetch(new Request(`https://dummy.com${fontPath}`));
+    if (!response.ok) {
+      fontStatus = { exists: false, error: `HTTP ${response.status}` };
+    } else {
+      const buffer = await response.arrayBuffer();
+      const hash = await computeHash(buffer);
+      const expectedHash = KNOWN_GOOD_HASHES.font;
+      const hashValid = hash === expectedHash;
+      
+      fontStatus = {
+        exists: true,
+        hash,
+        size: buffer.byteLength,
+        hashValid,
+        expectedHash,
+      };
+    }
+  } catch (error) {
+    fontStatus = {
+      exists: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    };
+  }
+
+  // Determine overall status
+  const issues: string[] = [];
+  
+  const allTemplatesExist = templateStatuses.every(t => t.exists);
+  const fontExists = fontStatus.exists;
+  
+  if (!allTemplatesExist) {
+    const missingTemplates = templateStatuses.filter(t => !t.exists).map(t => t.path);
+    issues.push(`Missing templates: ${missingTemplates.join(', ')}`);
+  }
+  
+  if (!fontExists) {
+    issues.push('Font file missing');
+  }
+  
+  // Check hash validity
+  const invalidTemplateHashes = templateStatuses.filter(t => t.exists && t.hashValid === false);
+  if (invalidTemplateHashes.length > 0) {
+    issues.push(`Template hash mismatch: ${invalidTemplateHashes.map(t => t.path).join(', ')}`);
+  }
+  
+  if (fontStatus.exists && fontStatus.hashValid === false) {
+    issues.push('Font hash mismatch');
+  }
+  
+  let overallStatus: SystemStatus['status'] = 'healthy';
+  if (!allTemplatesExist || !fontExists) {
+    overallStatus = 'unhealthy';
+  } else if (invalidTemplateHashes.length > 0 || fontStatus.hashValid === false) {
+    overallStatus = 'unhealthy';
+  }
+
+  // Run autotest
+  let autotestResult: SystemStatus['autotest'];
+  if (overallStatus === 'healthy') {
+    autotestResult = await runAutotest(env);
+    if (!autotestResult.passed) {
+      overallStatus = 'degraded';
+      issues.push('Autotest failed');
+    }
+  } else {
+    issues.push('Autotest skipped due to missing or invalid files');
+  }
+
+  const status: SystemStatus = {
+    status: overallStatus,
+    timestamp: new Date().toISOString(),
+    templates: templateStatuses,
+    font: fontStatus,
+    autotest: autotestResult,
+    issues: issues.length > 0 ? issues : undefined,
+  };
+
+  // Cache the status
+  cachedSystemStatus = status;
+  lastStatusCheck = now;
+
+  return status;
+}
+
+async function computeHash(buffer: ArrayBuffer): Promise<string> {
+  const hashBuffer = await crypto.subtle.digest('SHA-256', buffer);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+  return hashHex;
+}
+
+async function runAutotest(env: Env): Promise<SystemStatus['autotest']> {
+  const startTime = Date.now();
+  const errors: string[] = [];
+
+  // Test data for each category
+  const testCases: FormData[] = [
+    {
+      referee_name_1: 'Test Referee U9',
+      match_date: '2024-01-15',
+      starting_hour: '10:00',
+      team_1: 'Team A',
+      team_2: 'Team B',
+      age_category: 'U9',
+    },
+    {
+      referee_name_1: 'Test Referee 1',
+      referee_name_2: 'Test Referee 2',
+      match_date: '2024-01-15',
+      starting_hour: '14:30',
+      team_1: 'Team C',
+      team_2: 'Team D',
+      age_category: 'U11',
+    },
+    {
+      referee_name_1: 'Test Referee 1',
+      referee_name_2: 'Test Referee 2',
+      match_date: '2024-01-15',
+      starting_hour: '16:00',
+      team_1: 'Team E',
+      team_2: 'Team F',
+      age_category: 'U13',
+    },
+    {
+      referee_name_1: 'Test Main Referee',
+      match_date: '2024-01-15',
+      starting_hour: '18:00',
+      team_1: 'Team G',
+      team_2: 'Team H',
+      age_category: 'U15',
+      competition: 'Test Competition',
+      assistant_referee_1: 'Assistant 1',
+      assistant_referee_2: 'Assistant 2',
+      fourth_official: 'Fourth Official',
+      stadium_name: 'Test Stadium',
+      stadium_locality: 'Test City',
+    },
+  ];
+
+  // Run tests
+  for (const testData of testCases) {
+    try {
+      const pdfBuffer = await generateReport(testData, env);
+      
+      // Validate PDF was generated
+      if (!pdfBuffer || pdfBuffer.length === 0) {
+        errors.push(`${testData.age_category}: Generated PDF is empty`);
+        continue;
+      }
+
+      // Validate PDF format (basic check)
+      const pdfHeader = String.fromCharCode(...Array.from(pdfBuffer.slice(0, 4)));
+      if (pdfHeader !== '%PDF') {
+        errors.push(`${testData.age_category}: Invalid PDF format`);
+      }
+    } catch (error) {
+      errors.push(`${testData.age_category}: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  const duration = Date.now() - startTime;
+
+  return {
+    passed: errors.length === 0,
+    errors: errors.length > 0 ? errors : undefined,
+    duration,
+  };
 }
