@@ -30,15 +30,23 @@ export interface Env {
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
+    const allowedOrigins = [
+      'https://ref-tool-frontend.pages.dev',
+      'https://rapoarte.cristeavictor.xyz'
+    ];
+    
+    const origin = request.headers.get('Origin') || '';
+    const corsOrigin = allowedOrigins.includes(origin) ? origin : allowedOrigins[0];
+    
+    const corsHeaders = {
+      'Access-Control-Allow-Origin': corsOrigin,
+      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type',
+    };
+
     // Handle CORS preflight
     if (request.method === 'OPTIONS') {
-      return new Response(null, {
-        headers: {
-          'Access-Control-Allow-Origin': '*',
-          'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-          'Access-Control-Allow-Headers': 'Content-Type',
-        },
-      });
+      return new Response(null, { headers: corsHeaders });
     }
 
     const url = new URL(request.url);
@@ -53,7 +61,7 @@ export default {
       }), {
         headers: {
           'Content-Type': 'application/json',
-          'Access-Control-Allow-Origin': '*',
+          ...corsHeaders,
         },
       });
     }
@@ -73,7 +81,7 @@ export default {
             status: 400,
             headers: {
               'Content-Type': 'application/json',
-              'Access-Control-Allow-Origin': '*',
+              ...corsHeaders,
             },
           });
         }
@@ -88,7 +96,7 @@ export default {
             'Content-Type': 'application/pdf',
             'Content-Disposition': `attachment; filename="${filename}"`,
             'Content-Length': pdfBuffer.byteLength.toString(),
-            'Access-Control-Allow-Origin': '*',
+            ...corsHeaders,
           },
         });
 
@@ -101,7 +109,7 @@ export default {
           status: 500,
           headers: {
             'Content-Type': 'application/json',
-            'Access-Control-Allow-Origin': '*',
+            ...corsHeaders,
           },
         });
       }
@@ -109,7 +117,7 @@ export default {
 
     return new Response('Not Found', {
       status: 404,
-      headers: { 'Access-Control-Allow-Origin': '*' },
+      headers: corsHeaders,
     });
   },
 };
