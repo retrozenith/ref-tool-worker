@@ -62,6 +62,8 @@ interface SystemStatus {
 let cachedSystemStatus: SystemStatus | null = null;
 let lastStatusCheck: number = 0;
 const STATUS_CACHE_TTL = 60000; // 1 minute
+let statusCheckPromise: Promise<SystemStatus> | null = null; // Prevent concurrent checks
+let isInitialized = false; // Track if we've done the initial check
 
 // Supported localities (referee associations)
 const SUPPORTED_LOCALITIES = ['Ilfov', 'frf'] as const;
@@ -775,13 +777,31 @@ function generateFilename(formData: FormData): string {
 }
 
 async function getSystemStatus(env: Env, forceRefresh: boolean = false): Promise<SystemStatus> {
-  const now = Date.now();
-  
-  // Return cached status if available and not expired
-  if (!forceRefresh && cachedSystemStatus && (now - lastStatusCheck) < STATUS_CACHE_TTL) {
+  // If already initialized and not forcing refresh, return cached result immediately
+  if (isInitialized && cachedSystemStatus && !forceRefresh) {
     return cachedSystemStatus;
   }
 
+  // If a check is already in progress, wait for it
+  if (statusCheckPromise) {
+    return statusCheckPromise;
+  }
+
+  // Start the check
+  statusCheckPromise = performSystemCheck(env);
+  
+  try {
+    const status = await statusCheckPromise;
+    cachedSystemStatus = status;
+    lastStatusCheck = Date.now();
+    isInitialized = true;
+    return status;
+  } finally {
+    statusCheckPromise = null;
+  }
+}
+
+async function performSystemCheck(env: Env): Promise<SystemStatus> {
   // Build template paths for all localities
   const templatePaths: string[] = [];
   for (const locality of SUPPORTED_LOCALITIES) {
@@ -915,10 +935,6 @@ async function getSystemStatus(env: Env, forceRefresh: boolean = false): Promise
     autotest: autotestResult,
     issues: issues.length > 0 ? issues : undefined,
   };
-
-  // Cache the status
-  cachedSystemStatus = status;
-  lastStatusCheck = now;
 
   return status;
 }

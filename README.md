@@ -47,11 +47,21 @@ GET /api/status?refresh=true
 
 Returns detailed system status including template hash verification and autotest results.
 
-**Query Parameters:**
-- `refresh` (optional): Set to `true` to bypass cache and force a fresh check
+**Performance Optimization:**
+- ⚡ Status check runs **once on worker startup** and is cached permanently
+- Subsequent requests return instantly from cache (no CPU overhead)
+- Use `?refresh=true` to force a new check (expensive, ~2-3 seconds)
 
-**Response:**
-```json
+**Query Parameters:**
+- `refresh` (optional): Set to `true` to bypass cache and force a fresh check with full hash validation and autotest
+
+**Features:**
+- ✅ Template existence verification for all localities
+- ✅ SHA-256 hash validation (on refresh only)
+- ✅ Automatic PDF generation test for all age categories (on refresh only)
+- ✅ File existence and integrity checks
+- ✅ Instant response from cache
+- ✅ Detailed error reporting
 {
   "status": "healthy",
   "timestamp": "2025-11-13T18:49:45.884Z",
