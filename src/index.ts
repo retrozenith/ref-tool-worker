@@ -12,7 +12,8 @@ export interface FormData {
   assistant_referee_1?: string;
   assistant_referee_2?: string;
   fourth_official?: string;
-  age_category: 'U9' | 'U11' | 'U13' | 'U15';
+  age_category: 'U9' | 'U11' | 'U13' | 'U15' | 'U16' | 'U17' | 'U17F' | 'U12' | 'U14' | 'LIGA2' | 'LIGA3' | 'LIGAT' | 'CN';
+  locality: string;
   stadium_name?: string;
   stadium_locality?: string;
 }
@@ -62,36 +63,355 @@ let cachedSystemStatus: SystemStatus | null = null;
 let lastStatusCheck: number = 0;
 const STATUS_CACHE_TTL = 60000; // 1 minute
 
+// Supported localities (referee associations)
+const SUPPORTED_LOCALITIES = ['Ilfov', 'frf'] as const;
+type Locality = typeof SUPPORTED_LOCALITIES[number];
+
+// Template mapping for each locality
+const LOCALITY_TEMPLATES: Record<string, Record<string, string>> = {
+  'Ilfov': {
+    'U9': 'referee_template_u9.pdf',
+    'U11': 'referee_template_u11.pdf',
+    'U13': 'referee_template_u13.pdf',
+    'U15': 'referee_template_u15.pdf',
+  },
+  'frf': {
+    'U11': 'referee_template-Interliga-U11.pdf',
+    'U12': 'referee_template-Interliga-U12.pdf',
+    'U13': 'referee_template-liga-elitelor_U13.pdf',
+    'U14': 'referee_template-liga-elitelor_U14.pdf',
+    'U15': 'referee_template-liga-elitelor_U15.pdf',
+    'U16': 'referee_template-liga-elitelor_U16.pdf',
+    'U17': 'referee_template-liga-elitelor_U17.pdf',
+    'U17F': 'referee_template-liga-elitelor_U17 feminin.pdf',
+    'LIGA2': 'referee_template-liga-2.pdf',
+    'LIGA3': 'referee_template-liga-3.pdf',
+    'LIGAT': 'referee_template-liga-de-Tineret.pdf',
+    'CN': 'referee_template-campionate-nationale.pdf',
+  },
+};
+
 // Known good hashes for templates and font (baseline)
 const KNOWN_GOOD_HASHES = {
   templates: {
-    '/reports/referee_template_u9.pdf': '2c39f190ce628be33404bb62c8b272cba68a6924a2e876095d426da6f6680980',
-    '/reports/referee_template_u11.pdf': '3996ff002d0c86c1e2902255c2fccf02c5538c0c6f72b9d3aba16f3fc56de925',
-    '/reports/referee_template_u13.pdf': '2bce26208461dccb0a375847ecc8954df47ec9e98c2cca3de4533914a4a8b432',
-    '/reports/referee_template_u15.pdf': 'bc99e407ff955a3c417596ed2fc2a1d3d69fc069693ce55f14e9d638c5e257d1',
+    'Ilfov': {
+      '/reports/Ilfov/referee_template_u9.pdf': '2c39f190ce628be33404bb62c8b272cba68a6924a2e876095d426da6f6680980',
+      '/reports/Ilfov/referee_template_u11.pdf': '3996ff002d0c86c1e2902255c2fccf02c5538c0c6f72b9d3aba16f3fc56de925',
+      '/reports/Ilfov/referee_template_u13.pdf': '2bce26208461dccb0a375847ecc8954df47ec9e98c2cca3de4533914a4a8b432',
+      '/reports/Ilfov/referee_template_u15.pdf': 'bc99e407ff955a3c417596ed2fc2a1d3d69fc069693ce55f14e9d638c5e257d1',
+    },
+    'frf': {
+      '/reports/frf/referee_template-Interliga-U11.pdf': '321860428eaf400994ecff761a3ab64ebb6595e35a32f2159f9119f0316789d8',
+      '/reports/frf/referee_template-Interliga-U12.pdf': 'b4db5099c769ff153cb0499fe146838283272030047eaef30bf063de7c75f780',
+      '/reports/frf/referee_template-liga-elitelor_U13.pdf': '307cc8ba5bd6cda083b3901a835808e321829a29bdbaab78045c9faba8041e6f',
+      '/reports/frf/referee_template-liga-elitelor_U14.pdf': '98c1cac31adba46c5fdaed41860a7a5075179fd379af40adf12b18bedd9658ca',
+      '/reports/frf/referee_template-liga-elitelor_U15.pdf': '1e217e3e65588032e4967066bce2d316a17d5c25054350a98b5118a9e4985845',
+      '/reports/frf/referee_template-liga-elitelor_U16.pdf': '79dcb1827ba590522dab9fdbb3c37d1e34f0b614abcab21f297b5819e18b8556',
+      '/reports/frf/referee_template-liga-elitelor_U17.pdf': '6849559d0b3793b67a6ace029b8f71508a0b56983ad8dbf6dfe9d69fa3a83a3c',
+      '/reports/frf/referee_template-liga-elitelor_U17 feminin.pdf': 'a7acf455995e96920099b24a85a18ca523387878c60bb24282dd2e0354a07685',
+      '/reports/frf/referee_template-liga-2.pdf': '6f06a1148741c47151feabed467b4c58680f46f226b50f0b50df7a15a7219b69',
+      '/reports/frf/referee_template-liga-3.pdf': 'f0107dd39637f5ad88d06ee3d058f1f4dbec51d9bdd938344b9aae8a92063ec3',
+      '/reports/frf/referee_template-liga-de-Tineret.pdf': '607a2abe1c5a80189437d874966d6140f39c042e5fe6ee7bf897b14bb3cb8eef',
+      '/reports/frf/referee_template-campionate-nationale.pdf': '6f46471fb57f5567073b41ce1c42e71901d753f3b56c4eee5c6e8744e3642c05',
+    },
   },
   font: '0de679de4d3d236c4a60e13bd2cd16d0f93368e9f6ba848385a8023c2e53c202',
+};
+
+// Coordinate configurations for different localities and categories
+interface OverlayConfig {
+  [key: string]: { x: number; y: number; page: number; field: keyof FormData | 'formatted_date' | 'match_vs' | 'locality_field' | 'refs'}[];
+}
+
+const OVERLAY_CONFIGS: Record<string, Record<string, OverlayConfig>> = {
+  'Ilfov': {
+    'U9': {
+      overlays: [
+        { x: 101, y: 687, page: 0, field: 'referee_name_1' },
+        { x: 337, y: 686, page: 0, field: 'formatted_date' },
+        { x: 101, y: 712, page: 0, field: 'match_vs' },
+        { x: 101, y: 636, page: 0, field: 'team_1' },
+        { x: 355, y: 636, page: 0, field: 'team_2' },
+      ],
+    },
+    'U11': {
+      overlays: [
+        { x: 101, y: 687, page: 0, field: 'referee_name_1' },
+        { x: 101, y: 662, page: 0, field: 'referee_name_2' },
+        { x: 346, y: 686, page: 0, field: 'formatted_date' },
+        { x: 335, y: 660, page: 0, field: 'starting_hour' },
+        { x: 101, y: 712, page: 0, field: 'match_vs' },
+        { x: 101, y: 636, page: 0, field: 'team_1' },
+        { x: 355, y: 636, page: 0, field: 'team_2' },
+      ],
+    },
+    'U13': {
+      overlays: [
+        { x: 101, y: 687, page: 0, field: 'referee_name_1' },
+        { x: 101, y: 662, page: 0, field: 'referee_name_2' },
+        { x: 346, y: 686, page: 0, field: 'formatted_date' },
+        { x: 335, y: 660, page: 0, field: 'starting_hour' },
+        { x: 101, y: 712, page: 0, field: 'match_vs' },
+        { x: 101, y: 636, page: 0, field: 'team_1' },
+        { x: 355, y: 636, page: 0, field: 'team_2' },
+      ],
+    },
+    'U15': {
+      overlays: [
+        { x: 163, y: 353, page: 0, field: 'referee_name_1' },
+        { x: 163, y: 338, page: 0, field: 'assistant_referee_1' },
+        { x: 163, y: 321, page: 0, field: 'assistant_referee_2' },
+        { x: 163, y: 305, page: 0, field: 'fourth_official' },
+        { x: 490, y: 353, page: 0, field: 'locality_field' },
+        { x: 490, y: 337, page: 0, field: 'locality_field' },
+        { x: 490, y: 322, page: 0, field: 'locality_field' },
+        { x: 490, y: 305, page: 0, field: 'locality_field' },
+        { x: 390, y: 425, page: 0, field: 'formatted_date' },
+        { x: 510, y: 425, page: 0, field: 'starting_hour' },
+        { x: 110, y: 515, page: 0, field: 'match_vs' },
+        { x: 110, y: 453, page: 0, field: 'competition' },
+        { x: 150, y: 399, page: 0, field: 'stadium_name' },
+        { x: 163, y: 426, page: 0, field: 'stadium_locality' },
+        { x: 90, y: 78, page: 4, field: 'formatted_date' },
+        { x: 150, y: 783, page: 5, field: 'team_1' },
+        { x: 160, y: 783, page: 6, field: 'team_2' },
+      ],
+    },
+  },
+  'frf': {
+    // FRF templates use similar U15 layout for most categories
+    // These coordinates may need adjustment based on actual PDF layouts
+    'U11': { overlays: [
+      { x: 101, y: 687, page: 0, field: 'refs' },
+    ],
+   },
+    'U12': { overlays: [] },
+    'U13': { overlays: [
+        { x: 101, y: 687, page: 0, field: 'referee_name_1' },
+        { x: 101, y: 662, page: 0, field: 'referee_name_2' },
+        { x: 346, y: 686, page: 0, field: 'formatted_date' },
+        { x: 335, y: 660, page: 0, field: 'starting_hour' },
+        { x: 101, y: 712, page: 0, field: 'match_vs' },
+        { x: 101, y: 636, page: 0, field: 'team_1' },
+        { x: 355, y: 636, page: 0, field: 'team_2' },
+    ] },
+    'U14': { overlays: [
+        { x: 163, y: 359, page: 0, field: 'referee_name_1' },
+        { x: 163, y: 343, page: 0, field: 'assistant_referee_1' },
+        { x: 163, y: 327, page: 0, field: 'assistant_referee_2' },
+        { x: 163, y: 310, page: 0, field: 'fourth_official' },
+        { x: 490, y: 359, page: 0, field: 'locality_field' },
+        { x: 490, y: 344, page: 0, field: 'locality_field' },
+        { x: 490, y: 327, page: 0, field: 'locality_field' },
+        { x: 490, y: 310, page: 0, field: 'locality_field' },
+        { x: 390, y: 430, page: 0, field: 'formatted_date' },
+        { x: 510, y: 430, page: 0, field: 'starting_hour' },
+        { x: 110, y: 520, page: 0, field: 'match_vs' },
+        { x: 110, y: 458, page: 0, field: 'competition' },
+        { x: 150, y: 402, page: 0, field: 'stadium_name' },
+        { x: 163, y: 430, page: 0, field: 'stadium_locality' },
+        { x: 90, y: 78, page: 4, field: 'formatted_date' },
+        { x: 150, y: 783, page: 5, field: 'team_1' },
+        { x: 160, y: 783, page: 6, field: 'team_2' },
+    ],
+   },
+    'U15': { overlays: [
+        { x: 163, y: 359, page: 0, field: 'referee_name_1' },
+        { x: 163, y: 343, page: 0, field: 'assistant_referee_1' },
+        { x: 163, y: 327, page: 0, field: 'assistant_referee_2' },
+        { x: 163, y: 310, page: 0, field: 'fourth_official' },
+        { x: 490, y: 359, page: 0, field: 'locality_field' },
+        { x: 490, y: 344, page: 0, field: 'locality_field' },
+        { x: 490, y: 327, page: 0, field: 'locality_field' },
+        { x: 490, y: 310, page: 0, field: 'locality_field' },
+        { x: 390, y: 430, page: 0, field: 'formatted_date' },
+        { x: 510, y: 430, page: 0, field: 'starting_hour' },
+        { x: 110, y: 520, page: 0, field: 'match_vs' },
+        { x: 110, y: 458, page: 0, field: 'competition' },
+        { x: 150, y: 402, page: 0, field: 'stadium_name' },
+        { x: 163, y: 430, page: 0, field: 'stadium_locality' },
+        { x: 90, y: 78, page: 4, field: 'formatted_date' },
+        { x: 150, y: 783, page: 5, field: 'team_1' },
+        { x: 160, y: 783, page: 6, field: 'team_2' },
+    ],
+   },
+    'U16': { overlays: [
+        { x: 163, y: 353, page: 0, field: 'referee_name_1' },
+        { x: 163, y: 338, page: 0, field: 'assistant_referee_1' },
+        { x: 163, y: 321, page: 0, field: 'assistant_referee_2' },
+        { x: 163, y: 305, page: 0, field: 'fourth_official' },
+        { x: 490, y: 353, page: 0, field: 'locality_field' },
+        { x: 490, y: 337, page: 0, field: 'locality_field' },
+        { x: 490, y: 322, page: 0, field: 'locality_field' },
+        { x: 490, y: 305, page: 0, field: 'locality_field' },
+        { x: 390, y: 425, page: 0, field: 'formatted_date' },
+        { x: 510, y: 425, page: 0, field: 'starting_hour' },
+        { x: 110, y: 515, page: 0, field: 'match_vs' },
+        { x: 110, y: 453, page: 0, field: 'competition' },
+        { x: 150, y: 399, page: 0, field: 'stadium_name' },
+        { x: 163, y: 426, page: 0, field: 'stadium_locality' },
+        { x: 90, y: 78, page: 4, field: 'formatted_date' },
+        { x: 150, y: 783, page: 5, field: 'team_1' },
+        { x: 160, y: 783, page: 6, field: 'team_2' },
+    ],
+   },
+    'U17': { overlays: [
+        { x: 163, y: 353, page: 0, field: 'referee_name_1' },
+        { x: 163, y: 338, page: 0, field: 'assistant_referee_1' },
+        { x: 163, y: 321, page: 0, field: 'assistant_referee_2' },
+        { x: 163, y: 305, page: 0, field: 'fourth_official' },
+        { x: 490, y: 353, page: 0, field: 'locality_field' },
+        { x: 490, y: 337, page: 0, field: 'locality_field' },
+        { x: 490, y: 322, page: 0, field: 'locality_field' },
+        { x: 490, y: 305, page: 0, field: 'locality_field' },
+        { x: 390, y: 425, page: 0, field: 'formatted_date' },
+        { x: 510, y: 425, page: 0, field: 'starting_hour' },
+        { x: 110, y: 515, page: 0, field: 'match_vs' },
+        { x: 110, y: 453, page: 0, field: 'competition' },
+        { x: 150, y: 399, page: 0, field: 'stadium_name' },
+        { x: 163, y: 426, page: 0, field: 'stadium_locality' },
+        { x: 90, y: 78, page: 4, field: 'formatted_date' },
+        { x: 150, y: 783, page: 5, field: 'team_1' },
+        { x: 160, y: 783, page: 6, field: 'team_2' },
+    ],
+   },
+    'U17F': { overlays: [
+        { x: 163, y: 353, page: 0, field: 'referee_name_1' },
+        { x: 163, y: 338, page: 0, field: 'assistant_referee_1' },
+        { x: 163, y: 321, page: 0, field: 'assistant_referee_2' },
+        { x: 163, y: 305, page: 0, field: 'fourth_official' },
+        { x: 490, y: 353, page: 0, field: 'locality_field' },
+        { x: 490, y: 337, page: 0, field: 'locality_field' },
+        { x: 490, y: 322, page: 0, field: 'locality_field' },
+        { x: 490, y: 305, page: 0, field: 'locality_field' },
+        { x: 390, y: 425, page: 0, field: 'formatted_date' },
+        { x: 510, y: 425, page: 0, field: 'starting_hour' },
+        { x: 110, y: 515, page: 0, field: 'match_vs' },
+        { x: 110, y: 453, page: 0, field: 'competition' },
+        { x: 150, y: 399, page: 0, field: 'stadium_name' },
+        { x: 163, y: 426, page: 0, field: 'stadium_locality' },
+        { x: 90, y: 78, page: 4, field: 'formatted_date' },
+        { x: 150, y: 783, page: 5, field: 'team_1' },
+        { x: 160, y: 783, page: 6, field: 'team_2' },
+    ],
+   },
+    'LIGA2': { overlays: [
+        { x: 163, y: 353, page: 0, field: 'referee_name_1' },
+        { x: 163, y: 338, page: 0, field: 'assistant_referee_1' },
+        { x: 163, y: 321, page: 0, field: 'assistant_referee_2' },
+        { x: 163, y: 305, page: 0, field: 'fourth_official' },
+        { x: 490, y: 353, page: 0, field: 'locality_field' },
+        { x: 490, y: 337, page: 0, field: 'locality_field' },
+        { x: 490, y: 322, page: 0, field: 'locality_field' },
+        { x: 490, y: 305, page: 0, field: 'locality_field' },
+        { x: 390, y: 425, page: 0, field: 'formatted_date' },
+        { x: 510, y: 425, page: 0, field: 'starting_hour' },
+        { x: 110, y: 515, page: 0, field: 'match_vs' },
+        { x: 110, y: 453, page: 0, field: 'competition' },
+        { x: 150, y: 399, page: 0, field: 'stadium_name' },
+        { x: 163, y: 426, page: 0, field: 'stadium_locality' },
+        { x: 90, y: 78, page: 4, field: 'formatted_date' },
+        { x: 150, y: 783, page: 5, field: 'team_1' },
+        { x: 160, y: 783, page: 6, field: 'team_2' },
+    ],
+   },
+    'LIGA3': { overlays: [
+        { x: 163, y: 353, page: 0, field: 'referee_name_1' },
+        { x: 163, y: 338, page: 0, field: 'assistant_referee_1' },
+        { x: 163, y: 321, page: 0, field: 'assistant_referee_2' },
+        { x: 163, y: 305, page: 0, field: 'fourth_official' },
+        { x: 490, y: 353, page: 0, field: 'locality_field' },
+        { x: 490, y: 337, page: 0, field: 'locality_field' },
+        { x: 490, y: 322, page: 0, field: 'locality_field' },
+        { x: 490, y: 305, page: 0, field: 'locality_field' },
+        { x: 390, y: 425, page: 0, field: 'formatted_date' },
+        { x: 510, y: 425, page: 0, field: 'starting_hour' },
+        { x: 110, y: 515, page: 0, field: 'match_vs' },
+        { x: 110, y: 453, page: 0, field: 'competition' },
+        { x: 150, y: 399, page: 0, field: 'stadium_name' },
+        { x: 163, y: 426, page: 0, field: 'stadium_locality' },
+        { x: 90, y: 78, page: 4, field: 'formatted_date' },
+        { x: 150, y: 783, page: 5, field: 'team_1' },
+        { x: 160, y: 783, page: 6, field: 'team_2' },
+    ],
+  },
+    'LIGAT': { overlays: [
+        { x: 163, y: 353, page: 0, field: 'referee_name_1' },
+        { x: 163, y: 338, page: 0, field: 'assistant_referee_1' },
+        { x: 163, y: 321, page: 0, field: 'assistant_referee_2' },
+        { x: 163, y: 305, page: 0, field: 'fourth_official' },
+        { x: 490, y: 353, page: 0, field: 'locality_field' },
+        { x: 490, y: 337, page: 0, field: 'locality_field' },
+        { x: 490, y: 322, page: 0, field: 'locality_field' },
+        { x: 490, y: 305, page: 0, field: 'locality_field' },
+        { x: 390, y: 425, page: 0, field: 'formatted_date' },
+        { x: 510, y: 425, page: 0, field: 'starting_hour' },
+        { x: 110, y: 515, page: 0, field: 'match_vs' },
+        { x: 110, y: 453, page: 0, field: 'competition' },
+        { x: 150, y: 399, page: 0, field: 'stadium_name' },
+        { x: 163, y: 426, page: 0, field: 'stadium_locality' },
+        { x: 90, y: 78, page: 4, field: 'formatted_date' },
+        { x: 150, y: 783, page: 5, field: 'team_1' },
+        { x: 160, y: 783, page: 6, field: 'team_2' },
+    ],
+   },
+    'CN': { overlays: [
+        { x: 163, y: 353, page: 0, field: 'referee_name_1' },
+        { x: 163, y: 338, page: 0, field: 'assistant_referee_1' },
+        { x: 163, y: 321, page: 0, field: 'assistant_referee_2' },
+        { x: 163, y: 305, page: 0, field: 'fourth_official' },
+        { x: 490, y: 353, page: 0, field: 'locality_field' },
+        { x: 490, y: 337, page: 0, field: 'locality_field' },
+        { x: 490, y: 322, page: 0, field: 'locality_field' },
+        { x: 490, y: 305, page: 0, field: 'locality_field' },
+        { x: 390, y: 425, page: 0, field: 'formatted_date' },
+        { x: 510, y: 425, page: 0, field: 'starting_hour' },
+        { x: 110, y: 515, page: 0, field: 'match_vs' },
+        { x: 110, y: 453, page: 0, field: 'competition' },
+        { x: 150, y: 399, page: 0, field: 'stadium_name' },
+        { x: 163, y: 426, page: 0, field: 'stadium_locality' },
+        { x: 90, y: 78, page: 4, field: 'formatted_date' },
+        { x: 150, y: 783, page: 5, field: 'team_1' },
+        { x: 160, y: 783, page: 6, field: 'team_2' },
+    ],
+   },
+  },
 };
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const allowedOrigins = [
       'https://ref-tool-frontend.pages.dev',
-      'https://rapoarte.cristeavictor.xyz'
+      'https://rapoarte.cristeavictor.xyz',
+      'http://localhost:4321', // Local development
+      'http://localhost:8787', // Wrangler dev
     ];
     
     const origin = request.headers.get('Origin') || '';
-    const corsOrigin = allowedOrigins.includes(origin) ? origin : allowedOrigins[0];
     
-    const corsHeaders = {
-      'Access-Control-Allow-Origin': corsOrigin,
+    // Check if origin is allowed
+    // Support exact matches, Cloudflare Pages preview deployments, and cristeavictor.xyz subdomains
+    const isAllowed = allowedOrigins.includes(origin) || 
+                      (origin.endsWith('.ref-tool-frontend.pages.dev') && origin.startsWith('https://')) ||
+                      (origin.endsWith('.pages.dev') && origin.includes('ref-tool-frontend')) ||
+                      (origin.endsWith('.cristeavictor.xyz') && origin.startsWith('https://')) ||
+                      origin === 'https://cristeavictor.xyz';
+    
+    const corsHeaders: Record<string, string> = {
       'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
       'Access-Control-Allow-Headers': 'Content-Type',
     };
+    
+    // Only set Access-Control-Allow-Origin if origin is in allowed list
+    if (isAllowed) {
+      corsHeaders['Access-Control-Allow-Origin'] = origin;
+    }
 
     // Handle CORS preflight
     if (request.method === 'OPTIONS') {
-      return new Response(null, { headers: corsHeaders });
+      return new Response(null, { 
+        headers: isAllowed ? corsHeaders : { 'Access-Control-Allow-Methods': 'GET, POST, OPTIONS' }
+      });
     }
 
     const url = new URL(request.url);
@@ -126,11 +446,18 @@ export default {
 
     // Health check endpoint
     if (url.pathname === '/' || url.pathname === '/health') {
+      // Build supported categories per locality
+      const supportedByLocality: Record<string, string[]> = {};
+      for (const locality of SUPPORTED_LOCALITIES) {
+        supportedByLocality[locality] = Object.keys(LOCALITY_TEMPLATES[locality] || {});
+      }
+
       return new Response(JSON.stringify({
         message: 'PDF Generator API',
         endpoint: 'POST /api/generate-report',
         status_endpoint: 'GET /api/status (includes template hash check and autotest)',
-        supported_categories: ['U9', 'U11', 'U13', 'U15'],
+        supported_localities: SUPPORTED_LOCALITIES,
+        supported_by_locality: supportedByLocality,
         status: 'healthy'
       }), {
         headers: {
@@ -197,7 +524,7 @@ export default {
 };
 
 function validateFormData(formData: FormData): string | null {
-  const required = ['referee_name_1', 'match_date', 'starting_hour', 'team_1', 'team_2', 'age_category'];
+  const required = ['referee_name_1', 'match_date', 'starting_hour', 'team_1', 'team_2', 'age_category', 'locality'];
 
   for (const field of required) {
     if (!formData[field as keyof FormData] || formData[field as keyof FormData]?.toString().trim() === '') {
@@ -205,8 +532,20 @@ function validateFormData(formData: FormData): string | null {
     }
   }
 
-  if (!['U9', 'U11', 'U13', 'U15'].includes(formData.age_category)) {
-    return 'Invalid age category. Must be U9, U11, U13, or U15';
+  const validCategories = ['U9', 'U11', 'U12', 'U13', 'U14', 'U15', 'U16', 'U17', 'U17F', 'LIGA2', 'LIGA3', 'LIGAT', 'CN'];
+  if (!validCategories.includes(formData.age_category)) {
+    return `Invalid age category. Must be one of: ${validCategories.join(', ')}`;
+  }
+
+  if (!SUPPORTED_LOCALITIES.includes(formData.locality as Locality)) {
+    return `Invalid locality. Must be one of: ${SUPPORTED_LOCALITIES.join(', ')}`;
+  }
+
+  // Validate that the locality supports this age category
+  const localityTemplates = LOCALITY_TEMPLATES[formData.locality];
+  if (!localityTemplates || !localityTemplates[formData.age_category]) {
+    const supportedCategories = localityTemplates ? Object.keys(localityTemplates).join(', ') : 'none';
+    return `Age category ${formData.age_category} is not supported for locality ${formData.locality}. Supported categories: ${supportedCategories}`;
   }
 
   if ((formData.age_category === 'U11' || formData.age_category === 'U13') &&
@@ -228,29 +567,84 @@ function validateFormData(formData: FormData): string | null {
 }
 
 async function generateReport(formData: FormData, env: Env): Promise<Uint8Array> {
-  const templatePath = `/reports/referee_template_${formData.age_category.toLowerCase()}.pdf`;
+  const templateFilename = LOCALITY_TEMPLATES[formData.locality]?.[formData.age_category];
+  if (!templateFilename) {
+    throw new Error(`No template found for ${formData.locality}/${formData.age_category}`);
+  }
+  
+  const templatePath = `/reports/${formData.locality}/${templateFilename}`;
   const overlays = getOverlays(formData);
 
   return await applyOverlays(templatePath, overlays, env);
 }
 
 function getOverlays(formData: FormData): TextOverlay[] {
-  const overlays: TextOverlay[] = [];
-
-  switch (formData.age_category) {
-    case 'U9':
-      overlays.push(...getU9Overlays(formData));
-      break;
-    case 'U11':
-    case 'U13':
-      overlays.push(...getU11U13Overlays(formData));
-      break;
-    case 'U15':
-      overlays.push(...getU15Overlays(formData));
-      break;
+  const config = OVERLAY_CONFIGS[formData.locality]?.[formData.age_category];
+  
+  if (!config || !config.overlays || config.overlays.length === 0) {
+    // Fallback to legacy method for backward compatibility or unimplemented configs
+    return getLegacyOverlays(formData);
   }
 
+  const overlays: TextOverlay[] = [];
+  
+  for (const item of config.overlays) {
+    let text = '';
+    
+    switch (item.field) {
+      case 'formatted_date':
+        text = formatDate(formData.match_date, formData.age_category);
+        break;
+      case 'match_vs':
+        text = `${formData.team_1} - ${formData.team_2}`;
+        break;
+      case 'locality_field':
+        text = formData.locality;
+        break;
+      case 'referee_name_1':
+      case 'referee_name_2':
+      case 'refs':
+        text = `${formData.referee_name_1}  ${formData.referee_name_2}`;
+        break;
+      case 'assistant_referee_1':
+      case 'assistant_referee_2':
+      case 'fourth_official':
+      case 'team_1':
+      case 'team_2':
+      case 'starting_hour':
+      case 'competition':
+      case 'stadium_name':
+      case 'stadium_locality':
+        text = formData[item.field] || '';
+        break;
+    }
+    
+    if (text) {
+      overlays.push({
+        text,
+        x: item.x,
+        y: item.y,
+        page: item.page,
+      });
+    }
+  }
+  
   return overlays;
+}
+
+function getLegacyOverlays(formData: FormData): TextOverlay[] {
+  // Legacy fallback for categories not yet configured
+  switch (formData.age_category) {
+    case 'U9':
+      return getU9Overlays(formData);
+    case 'U11':
+    case 'U13':
+      return getU11U13Overlays(formData);
+    case 'U15':
+      return getU15Overlays(formData);
+    default:
+      return [];
+  }
 }
 
 function getU9Overlays(formData: FormData): TextOverlay[] {
@@ -293,10 +687,10 @@ function getU15Overlays(formData: FormData): TextOverlay[] {
   ];
 
   overlays.push(
-    { text: 'Ilfov', x: 490, y: 353, page: 0 },
-    { text: 'Ilfov', x: 490, y: 337, page: 0 },
-    { text: 'Ilfov', x: 490, y: 322, page: 0 },
-    { text: 'Ilfov', x: 490, y: 305, page: 0 }
+    { text: formData.locality, x: 490, y: 353, page: 0 },
+    { text: formData.locality, x: 490, y: 337, page: 0 },
+    { text: formData.locality, x: 490, y: 322, page: 0 },
+    { text: formData.locality, x: 490, y: 305, page: 0 }
   );
 
   return overlays;
@@ -388,12 +782,16 @@ async function getSystemStatus(env: Env, forceRefresh: boolean = false): Promise
     return cachedSystemStatus;
   }
 
-  const templatePaths = [
-    '/reports/referee_template_u9.pdf',
-    '/reports/referee_template_u11.pdf',
-    '/reports/referee_template_u13.pdf',
-    '/reports/referee_template_u15.pdf',
-  ];
+  // Build template paths for all localities
+  const templatePaths: string[] = [];
+  for (const locality of SUPPORTED_LOCALITIES) {
+    const localityTemplates = LOCALITY_TEMPLATES[locality];
+    if (localityTemplates) {
+      for (const [category, filename] of Object.entries(localityTemplates)) {
+        templatePaths.push(`/reports/${locality}/${filename}`);
+      }
+    }
+  }
 
   const fontPath = '/fonts/Roboto-Medium.ttf';
 
@@ -407,8 +805,18 @@ async function getSystemStatus(env: Env, forceRefresh: boolean = false): Promise
         }
         const buffer = await response.arrayBuffer();
         const hash = await computeHash(buffer);
-        const expectedHash = KNOWN_GOOD_HASHES.templates[path as keyof typeof KNOWN_GOOD_HASHES.templates];
-        const hashValid = hash === expectedHash;
+        
+        // Find the expected hash for this path
+        let expectedHash: string | undefined;
+        for (const locality of SUPPORTED_LOCALITIES) {
+          const localityHashes = KNOWN_GOOD_HASHES.templates[locality];
+          if (localityHashes && path in localityHashes) {
+            expectedHash = localityHashes[path as keyof typeof localityHashes];
+            break;
+          }
+        }
+        
+        const hashValid = expectedHash ? hash === expectedHash : undefined;
         
         return {
           path,
@@ -526,68 +934,111 @@ async function runAutotest(env: Env): Promise<SystemStatus['autotest']> {
   const startTime = Date.now();
   const errors: string[] = [];
 
-  // Test data for each category
-  const testCases: FormData[] = [
-    {
-      referee_name_1: 'Test Referee U9',
-      match_date: '2024-01-15',
-      starting_hour: '10:00',
-      team_1: 'Team A',
-      team_2: 'Team B',
-      age_category: 'U9',
-    },
-    {
-      referee_name_1: 'Test Referee 1',
-      referee_name_2: 'Test Referee 2',
-      match_date: '2024-01-15',
-      starting_hour: '14:30',
-      team_1: 'Team C',
-      team_2: 'Team D',
-      age_category: 'U11',
-    },
-    {
-      referee_name_1: 'Test Referee 1',
-      referee_name_2: 'Test Referee 2',
-      match_date: '2024-01-15',
-      starting_hour: '16:00',
-      team_1: 'Team E',
-      team_2: 'Team F',
-      age_category: 'U13',
-    },
-    {
-      referee_name_1: 'Test Main Referee',
-      match_date: '2024-01-15',
-      starting_hour: '18:00',
-      team_1: 'Team G',
-      team_2: 'Team H',
-      age_category: 'U15',
-      competition: 'Test Competition',
-      assistant_referee_1: 'Assistant 1',
-      assistant_referee_2: 'Assistant 2',
-      fourth_official: 'Fourth Official',
-      stadium_name: 'Test Stadium',
-      stadium_locality: 'Test City',
-    },
-  ];
+  // Test data for each category and locality
+  const testCasesPerLocality: { [key: string]: FormData[] } = {
+    'Ilfov': [
+      {
+        referee_name_1: 'Test Referee U9',
+        match_date: '2024-01-15',
+        starting_hour: '10:00',
+        team_1: 'Team A',
+        team_2: 'Team B',
+        age_category: 'U9',
+        locality: 'Ilfov',
+      },
+      {
+        referee_name_1: 'Test Referee 1',
+        referee_name_2: 'Test Referee 2',
+        match_date: '2024-01-15',
+        starting_hour: '14:30',
+        team_1: 'Team C',
+        team_2: 'Team D',
+        age_category: 'U11',
+        locality: 'Ilfov',
+      },
+      {
+        referee_name_1: 'Test Referee 1',
+        referee_name_2: 'Test Referee 2',
+        match_date: '2024-01-15',
+        starting_hour: '16:00',
+        team_1: 'Team E',
+        team_2: 'Team F',
+        age_category: 'U13',
+        locality: 'Ilfov',
+      },
+      {
+        referee_name_1: 'Test Main Referee',
+        match_date: '2024-01-15',
+        starting_hour: '18:00',
+        team_1: 'Team G',
+        team_2: 'Team H',
+        age_category: 'U15',
+        locality: 'Ilfov',
+        competition: 'Test Competition',
+        assistant_referee_1: 'Assistant 1',
+        assistant_referee_2: 'Assistant 2',
+        fourth_official: 'Fourth Official',
+        stadium_name: 'Test Stadium',
+        stadium_locality: 'Test City',
+      },
+    ],
+    'frf': [
+      {
+        referee_name_1: 'Test Referee',
+        match_date: '2024-01-15',
+        starting_hour: '10:00',
+        team_1: 'Team A',
+        team_2: 'Team B',
+        age_category: 'U15',
+        locality: 'frf',
+        competition: 'Test Liga',
+        assistant_referee_1: 'AR1',
+        assistant_referee_2: 'AR2',
+        fourth_official: 'FO',
+        stadium_name: 'Test Stadium',
+        stadium_locality: 'Test City',
+      },
+      {
+        referee_name_1: 'Test Referee Liga 2',
+        match_date: '2024-01-15',
+        starting_hour: '14:00',
+        team_1: 'Team C',
+        team_2: 'Team D',
+        age_category: 'LIGA2',
+        locality: 'frf',
+        competition: 'Liga 2',
+        assistant_referee_1: 'AR1',
+        assistant_referee_2: 'AR2',
+        fourth_official: 'FO',
+        stadium_name: 'Test Stadium',
+        stadium_locality: 'Test City',
+      },
+    ],
+  };
 
-  // Run tests
-  for (const testData of testCases) {
-    try {
-      const pdfBuffer = await generateReport(testData, env);
-      
-      // Validate PDF was generated
-      if (!pdfBuffer || pdfBuffer.length === 0) {
-        errors.push(`${testData.age_category}: Generated PDF is empty`);
-        continue;
-      }
+  // Run tests for all localities
+  for (const locality of SUPPORTED_LOCALITIES) {
+    const testCases = testCasesPerLocality[locality];
+    if (!testCases) continue;
 
-      // Validate PDF format (basic check)
-      const pdfHeader = String.fromCharCode(...Array.from(pdfBuffer.slice(0, 4)));
-      if (pdfHeader !== '%PDF') {
-        errors.push(`${testData.age_category}: Invalid PDF format`);
+    for (const testData of testCases) {
+      try {
+        const pdfBuffer = await generateReport(testData, env);
+        
+        // Validate PDF was generated
+        if (!pdfBuffer || pdfBuffer.length === 0) {
+          errors.push(`${locality}/${testData.age_category}: Generated PDF is empty`);
+          continue;
+        }
+
+        // Validate PDF format (basic check)
+        const pdfHeader = String.fromCharCode(...Array.from(pdfBuffer.slice(0, 4)));
+        if (pdfHeader !== '%PDF') {
+          errors.push(`${locality}/${testData.age_category}: Invalid PDF format`);
+        }
+      } catch (error) {
+        errors.push(`${locality}/${testData.age_category}: ${error instanceof Error ? error.message : 'Unknown error'}`);
       }
-    } catch (error) {
-      errors.push(`${testData.age_category}: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   }
 
